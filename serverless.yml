@@ -1,0 +1,252 @@
+service: kengine-pokedex
+
+custom:
+  region: eu-west-1
+
+package:
+  individually: true
+
+plugins:
+  - serverless-esbuild
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  memorySize: 512
+  stage: ${opt:stage}
+  timeout: 30
+  region: "${self:custom.region}"
+  logRetentionInDays: 1
+  versionFunctions: false
+  environment:
+    KINESIS: !Ref Stream
+  tags:
+    "kengine:tracing": true
+  tracing:
+    lambda: false
+    apiGateway: false
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: 
+          - 'dynamodb:putItem'
+          - 'dynamodb:scan'
+          - 'dynamodb:query'
+          Resource: 
+           - !GetAtt Table.Arn
+           - !Sub '${Table.Arn}/*'
+        - Effect: Allow
+          Action: 
+          - 'dynamodb:getItem'
+          - 'dynamodb:updateItem'
+          Resource: 
+           - !GetAtt Counter.Arn
+        - Effect: Allow
+          Action: 
+          - 's3:getObject'
+          - 's3:putObject'
+          Resource: 
+           - !Sub '${Bucket.Arn}/pokedex.json'
+        - Effect: Allow
+          Action: 
+          - 'SNS:Publish'
+          Resource: 
+           - !Ref Topic
+        - Effect: Allow
+          Action:
+            - 'Kinesis:PutRecord'
+          Resource:
+            - !GetAtt Stream.Arn
+  logs:
+    restApi:
+      accessLogging: true
+      format: '{"requestTime":"$context.requestTime","requestId":"$context.requestId","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":$context.status,"responseLatency":$context.responseLatency,"xrayTraceId":"$context.xrayTraceId","integrationRequestId":"$context.integration.requestId","functionResponseStatus":"$context.integration.status","integrationLatency":"$context.integration.latency","integrationServiceStatus":"$context.integration.integrationStatus","ip":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent","principalId":"$context.authorizer.principalId"}'
+      executionLogging: false # Turn off execution logs b/c they're too noisy.
+
+functions:
+  pokedex-get:
+    handler: ./src/get.handler
+    description: ${opt:stage} - gets a pokemon from the pokedex
+    events:
+      - http: 
+          path: pokemon/{name}
+          method: get 
+          cors: true
+          request: 
+            parameters: 
+              paths: 
+                name: true
+  seed:
+    timeout: 900
+    handler: ./seed.handler
+    description: seeds the db
+  pokedex-list:
+    handler: src/list.handler
+    description: ${opt:stage} - lists pokemon from the pokedex
+    events:
+      - http: 
+          path: pokemon
+          method: get 
+          cors: true
+  pokedex-search:
+    handler: ./src/search.handler
+    description: ${opt:stage} - search the pokemon db
+    events:
+      - http: 
+          path: search
+          method: get 
+          cors: true
+  send-email:
+    handler: src/send-email.handler
+    destinations:
+      onFailure: arn:aws:sqs:eu-west-1:522104763258:poke-dql-prod
+    events:
+      - sqs:
+          arn: !GetAtt Queue.Arn
+  stats:
+    handler: ./src/stats.handler
+    events:
+      - http: 
+          path: stats
+          method: get 
+          cors: true
+  stream:
+      handler: ./src/stream.handler
+      events:
+        - stream:
+            type: kinesis
+            arn: !GetAtt Stream.Arn
+            batchSize: 5
+            startingPosition: LATEST
+            maximumRetryAttempts: 1
+            enabled: true
+  
+  dispatcher:
+      handler: ./src/dispatcher.handler
+      events:
+        - sns:
+            arn: !Ref Topic
+            topicName: poke-topic-${opt:stage}
+            filterPolicy:
+              type:
+                - pokemon
+
+resources:
+  Resources:
+    Counter:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${opt:stage}-counter
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+         
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+    Table:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${opt:stage}
+        AttributeDefinitions:
+          - AttributeName: game
+            AttributeType: S
+          - AttributeName: id
+            AttributeType: N
+          - AttributeName: en
+            AttributeType: S
+          - AttributeName: jp
+            AttributeType: S
+          - AttributeName: ch
+            AttributeType: S
+          - AttributeName: fr
+            AttributeType: S
+         
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+          - AttributeName: game
+            KeyType: HASH
+          - AttributeName: id
+            KeyType: RANGE
+        LocalSecondaryIndexes:
+          - IndexName: en-name-index
+            KeySchema:
+              - AttributeName: game
+                KeyType: HASH
+              - AttributeName: en
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: jp-name-index
+            KeySchema:
+              - AttributeName: game
+                KeyType: HASH
+              - AttributeName: jp
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: ch-name-index
+            KeySchema:
+              - AttributeName: game
+                KeyType: HASH
+              - AttributeName: ch
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: fr-name-index
+            KeySchema:
+              - AttributeName: game
+                KeyType: HASH
+              - AttributeName: fr
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+    Bucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: poke-search-bucket-${opt:stage}
+    Queue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName:  poke-search-queue-${opt:stage}
+    TopicSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Endpoint: !GetAtt Queue.Arn
+        TopicArn: !Ref Topic
+        Protocol: sqs
+        FilterPolicy:
+          type:
+            - email.send
+    Topic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: poke-topic-${opt:stage}
+        TracingConfig: Active
+    QueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: "allow-sns-messages"
+              Effect: Allow
+              Principal: "*"
+              Resource: !GetAtt Queue.Arn
+              Action: "SQS:SendMessage"
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": !Ref Topic
+        Queues:
+          - !Ref Queue
+    DLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: poke-dql-${opt:stage}
+    Stream:
+      Type: AWS::Kinesis::Stream
+      Properties:
+        Name: poke-search-stream-${opt:stage}
+        ShardCount: 1
