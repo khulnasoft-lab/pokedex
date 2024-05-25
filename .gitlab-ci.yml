@@ -1,0 +1,36 @@
+# Make sure to add KENGINE_API_KEY to your CI/CD variables in Gitlab settings section
+
+default:
+  image:
+    name: khulnasoft/kengine:latest
+    entrypoint: [""]
+
+variables:
+  KENGINE_API_KEY: $KENGINE_API_KEY
+
+stages:
+  - plan
+  - push
+  - report
+
+plan:
+  stage: plan
+  script:
+    - echo "$KENGINE_API_KEY"
+    - echo no | kengine push --c .kengine
+
+push:
+  stage: push
+  needs:
+    - plan
+  when: manual
+  allow_failure: true
+  script:
+    - kengine push -y --c .kengine
+
+report:
+  stage: report
+  needs:
+    - push
+  script:
+    - kengine report --c .kengine
