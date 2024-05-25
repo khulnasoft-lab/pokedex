@@ -1,0 +1,9 @@
+node_modules
+
+.kengine/.out
+
+.serverless
+
+.idea
+
+.npmrc
