@@ -1,0 +1,24 @@
+# Remember to add KENGINE_API_KEY to repository variables in your Bitbucket
+
+#
+image: khulnasoft/kengine:latest
+
+pipelines:
+  default:
+    - step:
+        name: 'Plan'
+        script:
+          - echo no | kengine push --c .kengine
+    - step:
+        name: 'Push'
+        # Because we use "-y" flag in push command, we want to make sure the trigger is "manual"
+        trigger: 'manual'
+        script:
+          # This will push the changes without asking for confirmation again.
+          - kengine push -y --c .kengine
+    - step:
+        name: 'Report'
+        # Because we use "-y" flag in push command, we want to make sure the trigger is "manual"
+        script:
+          # This will push the changes without asking for confirmation again.
+          - kengine report --c .kengine
